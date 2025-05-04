@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+.ropeproject/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+
+# Audio files (if they are large and should be managed elsewhere)
+*.wav
+*.mp3
+*.ogg
+
+# Project specific
+recordings/
