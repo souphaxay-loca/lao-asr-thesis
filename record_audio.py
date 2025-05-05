@@ -38,6 +38,7 @@ import sys
 import queue
 import time
 import csv
+import re
 
 # --- Configuration ---
 SAMPLE_RATE = 16000  # Hertz (samples per second), standard for ASR
@@ -92,6 +93,8 @@ def load_sentences_from_csv(filepath):
                 sentence_id = row.get('sentence_id', '').strip()
                 text = row.get('transcription', '').strip()
 
+                print(sentence_id, text)
+
                 # Ensure both ID and text are present before adding
                 if sentence_id and text:
                     if sentence_id in sentences:
@@ -144,12 +147,50 @@ def list_audio_devices():
     except Exception as e:
         print(f"Error querying audio devices: {e}", file=sys.stderr)
 
+def get_recorded_sentence_ids_for_accent(accent_recording_dir):
+    """
+    Scans all speaker subdirectories within the given accent directory
+    and collects the sentence IDs from valid .wav filenames.
+    Assumes filename format SpeakerID_SentenceID.wav
+    Returns a set of recorded sentence IDs (strings).
+    """
+    recorded_ids = set()
+    print(f"Scanning for previously recorded sentences in: {accent_recording_dir}")
+
+    # Check if the base accent directory exists
+    if not os.path.isdir(accent_recording_dir):
+        print(f"Info: Accent directory '{accent_recording_dir}' not found. Assuming no prior recordings for this accent.")
+        return recorded_ids # Return empty set
+
+    # Iterate through items in the accent directory (expecting speaker folders)
+    for speaker_id_folder in os.listdir(accent_recording_dir):
+        speaker_dir_path = os.path.join(accent_recording_dir, speaker_id_folder)
+
+        # Check if it's actually a directory
+        if os.path.isdir(speaker_dir_path):
+            # Iterate through files within the speaker directory
+            try:
+                for filename in os.listdir(speaker_dir_path):
+                    # Check if it's a WAV file matching the expected pattern
+                    if filename.lower().endswith('.wav'):
+                        # Attempt to parse SentenceID from filename (e.g., C_SPK01_123.wav -> 123)
+                        # This regex looks for '_' followed by digits, followed by '.wav'
+                        match = re.search(r'_(\d+)\.wav$', filename, re.IGNORECASE)
+                        if match:
+                            sentence_id = match.group(1) # Extract the digits
+                            recorded_ids.add(sentence_id)
+                        # You might add more robust parsing or checking here if needed
+            except OSError as e:
+                 print(f"Warning: Could not read directory {speaker_dir_path}: {e}", file=sys.stderr)
+
+    print(f"Found {len(recorded_ids)} previously recorded sentence IDs for this accent.")
+    return recorded_ids
 
 # --- Main Execution Block ---
 def main():
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
-        description="Record audio sentences for an ASR dataset.",
+        description="Record audio sentences for an ASR dataset (Shared Accent Progress).",
         formatter_class=argparse.RawDescriptionHelpFormatter # Preserve formatting in help text
     )
     parser.add_argument('--speaker_id', required=True,
@@ -190,30 +231,36 @@ def main():
     print(f"Using audio input device: {selected_device_info}")
 
     # --- Directory Setup ---
-    # Construct the path for saving recordings: recordings/accent/speaker_id/
+    # Construct the path for the specific speaker: recordings/accent/speaker_id/
     speaker_recording_dir = os.path.join(RECORDINGS_BASE_DIR, args.accent, args.speaker_id)
+    # Construct the path for the whole accent group: recordings/accent/
+    accent_recording_dir = os.path.join(RECORDINGS_BASE_DIR, args.accent) # Path for checking shared progress
     try:
-        # Create directories if they don't exist. exist_ok=True prevents errors if they already exist.
+        # Ensure the specific speaker's directory exists
         os.makedirs(speaker_recording_dir, exist_ok=True)
-        print(f"Recordings will be saved to: {speaker_recording_dir}")
+        print(f"Recordings for this speaker will be saved to: {speaker_recording_dir}")
     except OSError as e:
         print(f"Error creating directory '{speaker_recording_dir}': {e}", file=sys.stderr)
         sys.exit(1)
 
     # --- Load Sentences ---
     sentences = load_sentences_from_csv(args.sentences_file)
-    # Get sentence IDs from the dictionary keys and sort them for consistent processing order
-    # sentence_ids = sorted(sentences.keys())
+    # Get sentence IDs from the dictionary keys and sort them numerically if possible
     sentence_ids = sorted(sentences.keys(), key=lambda x: int(x) if x.isdigit() else x)
-    print(sentence_ids)
     total_sentences = len(sentence_ids)
     session_recorded_count = 0
-    session_skipped_count = 0
+    session_skipped_count = 0 # Counts sentences skipped because *any* speaker in the accent did them
+
+    # --- Get IDs already recorded by ANY speaker in this accent group ---
+    # This function needs to be defined elsewhere in your script
+    already_recorded_accent_ids = get_recorded_sentence_ids_for_accent(accent_recording_dir)
+    # --------------------------------------------------------------------
 
     # --- Display Instructions ---
     print("\n--- Recording Session Start ---")
     print(f"Speaker: {args.speaker_id} | Accent: {args.accent}")
-    print(f"Total sentences loaded: {total_sentences}")
+    print(f"Total sentences in file: {total_sentences}")
+    print(f"Sentences already recorded for accent '{args.accent}': {len(already_recorded_accent_ids)}")
     print("\nInstructions for the OPERATOR:")
     print("  1. The sentence to be read will be displayed.")
     print("  2. Ensure the speaker is ready.")
@@ -233,18 +280,19 @@ def main():
         for i, sentence_id in enumerate(sentence_ids):
             # Get the sentence text from the dictionary using the ID
             sentence_text = sentences[sentence_id]
-            # Define the output filename: SpeakerID_SentenceID.wav
+            # Define the output filename (specific to current speaker and sentence)
             output_filename = f"{args.speaker_id}_{sentence_id}.wav"
-            output_filepath = os.path.join(speaker_recording_dir, output_filename)
+            output_filepath = os.path.join(speaker_recording_dir, output_filename) # Full path to save file
 
             print(f"\n[{i+1}/{total_sentences}] Sentence ID: {sentence_id}")
-            print(f"  Text to Read: '{sentence_text}'")
-
-            # Check if this sentence has already been recorded in a previous session
-            if os.path.exists(output_filepath):
-                print(f"  --> Already recorded as '{output_filename}'. Skipping.")
+            # Check if this sentence ID was recorded by ANY speaker in the accent group
+            if sentence_id in already_recorded_accent_ids:
+                print(f"  --> Sentence ID {sentence_id} already recorded for accent '{args.accent}'. Skipping.")
                 session_skipped_count += 1
-                continue
+                continue # Skips to the next sentence_id
+
+            # If not skipped, display the text to read
+            print(f"  Text to Read: '{sentence_text}'")
 
             # Prompt operator to start or quit
             operator_action = input("Press ENTER to start recording, or type 'q' to quit session: ")
@@ -298,12 +346,17 @@ def main():
             audio_data = np.concatenate(recording_chunks, axis=0)
 
             # --- Save the Audio File ---
+            # File is saved under the CURRENT speaker's ID and folder
             try:
                 # Save as WAV file, explicitly specifying 16-bit PCM subtype
                 sf.write(output_filepath, audio_data, SAMPLE_RATE, subtype='PCM_16')
                 duration_seconds = len(audio_data) / SAMPLE_RATE
                 print(f"--> Successfully saved: '{output_filename}' ({duration_seconds:.2f} seconds)")
                 session_recorded_count += 1
+                # Add the newly recorded ID to our *in-memory* set for this session
+                # This prevents trying it again if loop somehow repeats, but the file
+                # system check at the start of the next run is the main progress mechanism.
+                already_recorded_accent_ids.add(sentence_id)
                 time.sleep(0.5) # Brief pause before the next prompt
 
             except Exception as e:
@@ -312,13 +365,13 @@ def main():
                  # Decide if you want to stop the whole session on a save error
                  break # Stop the session for safety
 
+    # --- Error Handling ---
     except sd.PortAudioError as e:
         print(f"\nFatal Audio Device Error: {e}", file=sys.stderr)
         print("Please check microphone connection, system audio settings, and permissions.")
         if current_stream:
-            try: current_stream.close() # Attempt to close stream if open
+            try: current_stream.close()
             except Exception: pass
-        # Offer to list devices again might be helpful here
         list_audio_devices()
         print("Exiting script due to audio error.")
         sys.exit(1)
@@ -341,15 +394,15 @@ def main():
         print("\n--- Recording Session Summary ---")
         print(f"Speaker: {args.speaker_id} | Accent: {args.accent}")
         print(f"Total Sentences in File: {total_sentences}")
-        print(f"Sentences Recorded in this Session: {session_recorded_count}")
-        print(f"Sentences Skipped (already existed): {session_skipped_count}")
-        # Calculate remaining accurately, considering possibility session ended early
-        recorded_ids = set(os.path.splitext(f)[0] for f in os.listdir(speaker_recording_dir) if f.startswith(args.speaker_id) and f.endswith('.wav'))
-        expected_ids = set(f"{args.speaker_id}_{sid}" for sid in sentence_ids)
-        actually_recorded_count = len(recorded_ids.intersection(expected_ids))
-        remaining = total_sentences - actually_recorded_count
-        print(f"Total Sentences Recorded for this Speaker (Cumulative): {actually_recorded_count}")
-        print(f"Sentences Remaining in File: {remaining}")
+        print(f"Sentences Recorded by THIS speaker in THIS Session: {session_recorded_count}")
+        print(f"Sentences Skipped (already done by ANY speaker in accent): {session_skipped_count}")
+        # Recalculate overall progress for the accent by rescanning the directory
+        # This gives the most accurate final count for the accent group
+        final_recorded_ids = get_recorded_sentence_ids_for_accent(accent_recording_dir)
+        total_recorded_for_accent = len(final_recorded_ids)
+        remaining_for_accent = total_sentences - total_recorded_for_accent
+        print(f"Total Sentences Recorded for Accent '{args.accent}' (Cumulative): {total_recorded_for_accent}")
+        print(f"Sentences Remaining for Accent: {remaining_for_accent}")
         print("-" * 40)
 
 # --- Script Entry Point ---
