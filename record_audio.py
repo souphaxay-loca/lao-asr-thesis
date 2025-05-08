@@ -93,7 +93,7 @@ def load_sentences_from_csv(filepath):
                 sentence_id = row.get('sentence_id', '').strip()
                 text = row.get('transcription', '').strip()
 
-                print(sentence_id, text)
+                # print(sentence_id, text)
 
                 # Ensure both ID and text are present before adding
                 if sentence_id and text:
